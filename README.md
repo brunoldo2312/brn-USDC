@@ -1,3 +1,101 @@
+
+# ESQUEMA TÉCNICO E PASSO A PASSO DE EXECUÇÃO: SISTEMA P2P E CARTEIRA BRN
+
+---
+
+## 1. FLUXOGRAMA DE FUNCIONAMENTO DO SISTEMA
+
+┌────────────────────────────────────────────────────────────────────────┐
+│                        FASE 1: CRIAÇÃO DA ORDEM                        │
+└────────────────────────────────────────────────────────────────────────┘
+ [Usuário A] Abre a Carteira BRN e define: (Qtd USDC, Cotação, Dados de Pagamento)
+       │
+       ▼
+ [Carteira BRN] Assina e envia a transação para o Contrato Inteligente
+       │
+       ▼
+ [Contrato Escrow] Trava o USDC do Usuário A no cofre digital
+       │
+       ▼
+ Ordem fica **Ativa e Registrada** na Blockchain
+
+──────────────────────────────────────────────────────────────────────────
+
+┌────────────────────────────────────────────────────────────────────────┐
+│             FASE 2: SINCRONIZAÇÃO E LEITURA PELA CARTEIRA BRN          │
+└────────────────────────────────────────────────────────────────────────┘
+ [Aplicação Carteira BRN] Sincroniza e escuta os eventos da Blockchain em tempo real
+       │
+       ▼
+ Lê as ordens pré-programadas ativas no Contrato inteligente
+       │
+       ▼
+ Exibe o mural de compra e venda diretamente no aplicativo da Carteira BRN para todos os usuários
+
+──────────────────────────────────────────────────────────────────────────
+
+┌────────────────────────────────────────────────────────────────────────┐
+│                    FASE 3: EXECUÇÃO E LIQUIDAÇÃO                       │
+└────────────────────────────────────────────────────────────────────────┘
+ [Usuário B] Abre a Carteira BRN, vê as ordens sincronizadas e clica em "Cumprir Ordem"
+       │
+       ▼
+ [Carteira BRN] Exibe os dados de pagamento (Ex: Chave PIX) do Usuário A
+       │
+       ▼
+ [Usuário B] Realiza o pagamento em moeda local na sua conta bancária
+       │
+       ▼
+ [Usuário A] Confirma o recebimento na sua conta bancária e clica em "Liberar" na Carteira BRN
+       │
+       ▼
+ [Contrato Escrow] Transfere automaticamente o USDC travado para a Carteira BRN do Usuário B
+
+---
+
+## 2. ARQUITETURA DO PROGRAMA
+
+1. **Smart Contract (Cofre Escrow):** Código imutável na blockchain que guarda os USDC e gerencia a lógica de trava/liberação.
+2. **Sincronizador de Ordens (Indexer/Node Service):** Mecanismo interno da carteira BRN que lê a blockchain e busca as ordens em tempo real.
+3. **Módulo Web3 da Carteira BRN:** Interface e lógica para criar ordens, ler o mural e assinar transações com as chaves do usuário.
+
+---
+
+## 3. PASSO A PASSO PARA CONSTRUÇÃO E COMPILAÇÃO DO PROGRAMA
+
+1. **Etapa 1: Definição de Infraestrutura**
+   - Escolher a rede blockchain para o deploy (Ex: Polygon, Solana, BNB Chain, Arbitrum).
+   - Mapear os contratos oficiais do USDC na rede escolhida.
+
+2. **Etapa 2: Código do Smart Contract (Solidity / Rust)**
+   - Escrever o contrato com funções de `criarOrdem()`, `cumprirOrdem()`, `confirmarLiberacao()` e `cancelarOrdem()`.
+
+3. **Etapa 3: Compilação e Testes (Testnet)**
+   - Compilar o contrato usando frameworks como Hardhat ou Foundry.
+   - Fazer deploy na rede de testes (Testnet) para validar o cofre digital e a trava de USDC.
+
+4. **Etapa 4: Integração com a Carteira BRN**
+   - Implementar a função de leitura dos eventos da blockchain na Carteira BRN.
+   - Criar a tela de "Livreiro de Ofertas/Mural" no app para mostrar as ordens ativas.
+
+5. **Etapa 5: Deploy em Produção (Mainnet)**
+   - Fazer o deploy do Smart Contract definitivo na rede principal.
+   - Conectar as chaves e RPCs de produção na Carteira BRN.
+
+---
+
+## 4. DADOS NECESSÁRIOS PARA CONTINUAR A PROGRAMAÇÃO
+
+Envie os dados abaixo na medida em que forem definidos (nunca envie chaves privadas ou senhas reais):
+
+1. **Rede Blockchain Escolhida:** (Ex: Polygon, Ethereum, Solana, BNB Chain).
+2. **Endereço do USDC na Rede:** Endereço do contrato token USDC escolhido.
+3. **Endereço Público da Carteira Administradora (Public Key):** Endereço `0x...` responsável pela implantação.
+4. **URL do Provedor de Nó (RPC URL):** Link do nó da blockchain (Ex: Alchemy, QuickNode ou Infura).
+5. **Regras da Ordem:** Definição de tempo limite de expiração da ordem (ex: 30 minutos) e taxas da aplicação (se houver).
+
+
+
 bruno@bruno-HP-Pavilion-Sleekbook-14-PC:~/Downloads/brn-USDC$ node deploy.js
 ◇ injected env (3) from .env // tip: ⌘ override existing { override: true }
 --- GERANDO NOVA CARTEIRA ---

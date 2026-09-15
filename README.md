@@ -1,1 +1,28 @@
-# brn-btc
+[Vendedor]                              [Comprador]
+   │                                        │
+   │ 1. Coloca ordem: VENDO 100 BRN        │
+   │    por 0.50 USDC/BRN                   │
+   │    + endereço USDC de recebimento      │
+   │                                        │
+   │ → 100 BRN são TRAVADOS (escrow)        │
+   │   no banco local                       │
+   │                                        │
+   │                         2. Vê a ordem │
+   │                         3. Envia USDC │
+   │                            (50 USDC)  │
+   │                            no MetaMask│
+   │                            para o      │
+   │                            endereço do │
+   │                            vendedor    │
+   │                                        │
+   │                         4. Cola o hash │
+   │                            da tx no GUI│
+   │                                        │
+   │        5. Nó consulta o RPC da Polygon │
+   │           confere se o Transfer USDC   │
+   │           foi pago corretamente        │
+   │                                        │
+   │        6. Libera os 100 BRN travados   │
+   │           → crédita no comprador       │
+   │                                        │
+   │        7. Ordem marcada como FILLED    │

@@ -1,3 +1,131 @@
+📋 Manual de Execução (Exchange BRN/USDC)
+1. Pré-requisitos
+Ferramenta	Versão mínima	Observação
+Python	3.10+	Para o backend e o nó
+Node.js	18+	Para ferramentas de contrato (opcional)
+Remix IDE	—	Para implantar contratos (ou Hardhat)
+MetaMask	—	Para interagir com a Polygon Amoy
+Conta Polygon Amoy	—	Com MATIC de testnet para gás
+2. Clonar o Repositório
+bash
+git clone https://github.com/brunoldo2312/brn-USDC.git
+cd brn-USDC
+3. Implantar os Contratos Inteligentes
+3.1. Implantar BRNToken.sol
+Acesse remix.ethereum.org.
+
+Crie um arquivo BRNToken.sol e cole o conteúdo de contracts/BRNToken.sol.
+
+Compile com Solidity ^0.8.20.
+
+No campo Deploy, insira o initialSupply desejado (ex.: 1000000000000000000000000 para 1.000.000 BRN com 18 decimais).
+
+Clique em Deploy e confirme na MetaMask (rede Polygon Amoy Testnet).
+
+Anote o endereço do contrato BRNToken.
+
+3.2. Implantar BRNExchange.sol
+No Remix, crie BRNExchange.sol e cole o conteúdo de contracts/BRNExchange.sol.
+
+Compile com Solidity ^0.8.20.
+
+No campo Deploy, insira:
+
+brnToken: endereço do BRNToken implantado acima.
+
+operator_: endereço da sua hot wallet (que chamará fillOrder).
+
+Clique em Deploy e confirme.
+
+Anote o endereço do contrato BRNExchange.
+
+4. Configurar o Backend
+4.1. Criar o arquivo .env
+Na raiz do projeto, crie um arquivo .env com as seguintes variáveis:
+
+env
+# Rede (Polygon Amoy Testnet)
+BRN_RPC_URL=https://rpc-amoy.polygon.technology
+BRN_CHAIN_ID=80002
+BRN_GAS_PRICE_GWEI=30
+
+# Endereços dos contratos (obtidos no passo 3)
+BRN_TOKEN_ADDRESS=0x...
+BRN_EXCHANGE_ADDRESS=0x...
+BRN_USDC_ADDRESS=0x...          # Endereço do USDC na Polygon Amoy
+
+# Operador (hot wallet)
+BRN_OPERATOR_PRIVATE_KEY=0x...  # Chave privada da hot wallet
+BRN_OPERATOR_USDC_ADDRESS=0x... # Endereço que recebe USDC
+
+# Watcher
+BRN_WATCHER_POLL=5
+BRN_MIN_CONFIRMATIONS=1
+
+# Servidor
+BRN_HOST=0.0.0.0
+BRN_PORT=8000
+BRN_DB_PATH=brn_exchange.db
+Atenção: O endereço do USDC na Polygon Amoy é 0x41E94Eb019C0762f9Bfcf9Fb1E58725BfB0e7582 (USDC testnet oficial). Confirme na documentação da Circle.
+
+4.2. Instalar Dependências
+bash
+cd backend
+pip install -r requirements.txt
+As dependências incluem fastapi, uvicorn, web3, eth-account, python-dotenv e pydantic.
+
+5. Executar o Backend
+⚠️ O backend está incompleto. Não há arquivo de servidor FastAPI. Você precisa criar um backend/app.py com o seguinte conteúdo mínimo:
+
+python
+from fastapi import FastAPI
+from backend.config import cfg
+from backend.db import DB
+
+app = FastAPI(title="BRN Exchange API")
+db = DB(cfg.DB_PATH)
+
+@app.get("/health")
+def health():
+    return {"status": "ok", "missing_env": cfg.validate()}
+
+# Adicione aqui as rotas para criar ordens, listar ordens, etc.
+Depois, execute:
+
+bash
+cd backend
+uvicorn app:app --host 0.0.0.0 --port 8000 --reload
+O servidor estará disponível em http://localhost:8000. A rota /health mostrará se todas as variáveis de ambiente obrigatórias estão definidas.
+
+6. Executar o Nó Blockchain BRN (Opcional)
+Se você também quiser executar o nó blockchain independente:
+
+bash
+# Na raiz do projeto
+python main.py
+Isso abrirá a interface gráfica Tkinter. O nó usa um banco SQLite local (brn_node.db) e se conecta à rede P2P na porta 7777.
+
+Nota: O nó blockchain não se comunica com o exchange USDC. São projetos separados que acabaram no mesmo repositório.
+
+7. Fluxo de Operação do Exchange
+Vendedor chama approve(BRN, amount) no contrato BRNToken.
+
+Vendedor chama createSellOrder(brnAmount, pricePerBRN, usdcReceiver) no BRNExchange. Os BRN ficam em escrow no contrato.
+
+Comprador envia USDC diretamente para a hot wallet do operador (off-chain).
+
+Operador chama fillOrder(orderId, buyer) no BRNExchange. O contrato libera os BRN para o comprador.
+
+Operador envia USDC ao vendedor via hot wallet (off-chain).
+
+🔧 Correções Recomendadas
+Problema	Solução
+Backend FastAPI incompleto	Criar backend/app.py com rotas mínimas (ver passo 5)
+Pasta backend/backend/ aninhada	Mover config.py para backend/config.py e remover a pasta extra
+Sem scripts de deploy	Adicionar Hardhat ou usar Remix (documentado acima)
+Sem .env.example	Criar o arquivo com as variáveis listadas no passo 4.1
+Arquivos .db no repositório	Adicionar *.db, *.db-shm, *.db-wal ao .gitignore
+Dois projetos misturados	Separar em branches ou repositórios distintos
 1) contracts/BRNToken.sol — Token BRN (ERC-20)
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;

@@ -26,3 +26,21 @@
    │           → crédita no comprador       │
    │                                        │
    │        7. Ordem marcada como FILLED    │
+
+
+
+
+[Vendedor]                          [VOCÊ - OPERADOR]              [Comprador]
+    │                                      │                            │
+    │ 1. Coloca ordem: 100 BRN a 0.5      │                            │
+    │    + endereço USDC dele             │                            │
+    │                                      │                            │
+    │ ── BRN vai pro SEU wallet ─────────►│                            │
+    │                                      │                            │
+    │                                      │◄── 2. Comprador envia ────│
+    │                                      │    USDC pro SEU wallet    │
+    │                                      │                            │
+    │                                      │ 3. Você confirma e:      │
+    │◄── 4. USDC vai pro vendedor ────────│                            │
+    │                                      │──── 5. BRN vai pro ──────►│
+    │                                      │       comprador            │

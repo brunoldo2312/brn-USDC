@@ -1,3 +1,42 @@
+bruno@bruno-HP-Pavilion-Sleekbook-14-PC:~/Downloads/brn-USDC$ node deploy.js
+◇ injected env (3) from .env // tip: ⌘ override existing { override: true }
+--- GERANDO NOVA CARTEIRA ---
+Endereço Público: 0xB7f2b4BC75F67545f7b69E4c7F1ee689db71cbFa
+Chave Privada:    0x666d1ad690fe324f1ec6f664cf338667a51b71969f940ee390416507543a1cde
+Mnemônico (Seed): scissors bacon random federal draft bottom rib install either trip warfare caution
+-------------------------------
+
+⚠️ ATENÇÃO: Adicione fundos (testnet faucets) a este endereço antes de prosseguir com o deploy.
+Iniciando o deploy do contrato...
+Erro ao fazer deploy: invalid BytesLike value (argument="value", value="0x60806040...", code=INVALID_ARGUMENT, version=6.17.0)
+
+Dica: Certifique-se de que a carteira gerada possui saldo suficiente para pagar o Gas.
+bruno@bruno-HP-Pavilion-Sleekbook-14-PC:~/Downloads/brn-USDC$ 
+
+# ============ REDE ============
+BRN_RPC_URL=https://rpc-amoy.polygon.technology
+BRN_CHAIN_ID=80002
+BRN_GAS_PRICE_GWEI=30
+BRN_MIN_CONFIRMATIONS=1
+
+# ============ CONTRATOS (preencher após o deploy) ============
+BRN_TOKEN_ADDRESS=0x...
+BRN_EXCHANGE_ADDRESS=0x...
+BRN_USDC_ADDRESS=0x72adb3a7a556fc331da7fd0240ba684b0c3a0d6a
+
+# ============ OPERADOR ============
+BRN_OPERATOR_PRIVATE_KEY=0x...
+BRN_OPERATOR_USDC_ADDRESS=0x...
+
+# ============ DEPLOYER (só para hardhat) ============
+DEPLOYER_PRIVATE_KEY=0x...
+POLYGONSCAN_KEY=
+
+# ============ SERVIDOR ============
+BRN_HOST=0.0.0.0
+BRN_PORT=8000
+BRN_DB_PATH=brn_exchange.db
+BRN_WATCHER_POLL=5
 📋 Manual de Execução (Exchange BRN/USDC)
 1. Pré-requisitos
 Ferramenta	Versão mínima	Observação

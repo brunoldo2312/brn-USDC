@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <title>Carteira BRN P2P</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            font-family: Arial, sans-serif;
+            background: #020617;
+            color: #f8fafc;
+            padding: 20px;
+            margin: 0;
+        }
+        .container { max-width: 700px; margin: 0 auto; }
+        h1 { color: #38bdf8; text-align: center; }
+        h2 { color: #e2e8f0; font-size: 1.1rem; }
+        button {
+            padding: 10px 16px;
+            background: #0284c7;
+            color: #fff;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 5px 0;
+            font-size: 0.95rem;
+        }
+        button:hover { background: #0369a1; }
+        button:disabled { background: #475569; cursor: not-allowed; }
+        button.perigo { background: #b91c1c; }
+        button.perigo:hover { background: #991b1b; }
+        button.ok { background: #059669; }
+        button.ok:hover { background: #047857; }
+        input, select {
+            padding: 10px;
+            margin: 5px 0 15px 0;
+            border-radius: 5px;
+            border: 1px solid #334155;
+            background: #1e293b;
+            color: #f8fafc;
+            width: 100%;
+            font-family: monospace;
+        }
+        label { display: block; color: #94a3b8; font-size: 0.9rem; margin-top: 10px; }
+        .box {
+            background: #0f172a;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            border: 1px solid #1e293b;
+        }
+        #walletAddress { color: #64748b; margin-left: 10px; }
+        #statusConexao { color: #f87171; }
+        .saldo {
+            display: flex;
+            justify-content: space-between;
+            padding: 10px;
+            background: #1e293b;
+            border-radius: 5px;
+            margin: 5px 0;
+        }
+        .saldo strong { color: #38bdf8; }
+        .endereco-box {
+            background: #1e293b;
+            padding: 12px;
+            border-radius: 5px;
+            font-family: monospace;
+            font-size: 0.85rem;
+            word-break: break-all;
+            color: #38bdf8;
+            margin: 10px 0;
+        }
+        .aviso {
+            background: #fef3c7;
+            color: #78350f;
+            padding: 10px;
+            border-radius: 5px;
+            margin: 10px 0;
+            font-size: 0.9rem;
+            display: none;
+        }
+        .aviso.erro { background: #fee2e2; color: #7f1d1d; }
+        .aviso.ok { background: #d1fae5; color: #064e3b; }
+        .aviso.visivel { display: block; }
+        #qrcode {
+            display: flex;
+            justify-content: center;
+            margin: 15px 0;
+        }
+        #qrcode img { background: #fff; padding: 8px; border-radius: 8px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Carteira BRN P2P</h1>
+
+        <!-- Painel de Conexao -->
+        <div class="box">
+            <button onclick="conectarCarteira()">Conectar Carteira</button>
+            <span id="walletAddress">Desconectado</span><br><br>
+            <span id="statusConexao">Sincronizador P2P: OFFLINE</span>
+        </div>
+
+        <!-- Painel de Saldos -->
+        <div class="box">
+            <h2>Meus Saldos</h2>
+            <div class="saldo"><span>BRN:</span><strong id="saldoBRN">--</strong></div>
+            <div class="saldo"><span>USDC:</span><strong id="saldoUSDT">--</strong></div>
+            <div class="saldo"><span>POL (gas):</span><strong id="saldoPOL">--</strong></div>
+            <button onclick="carregarSaldos()">Atualizar Saldos</button>
+        </div>
+
+        <!-- Painel de Recebimento -->
+        <div class="box">
+            <h2>Receber BRN</h2>
+            <p style="color:#94a3b8; font-size:0.9rem;">Compartilhe seu endereco para receber tokens BRN:</p>
+            <div class="endereco-box" id="meuEndereco">Conecte a carteira para ver o endereco</div>
+            <div id="qrcode"></div>
+            <button onclick="copiarEndereco()">Copiar Endereco</button>
+            <button onclick="compartilharEndereco()">Compartilhar</button>
+        </div>
+
+        <!-- Painel de Transferencia Segura -->
+        <div class="box">
+            <h2>Enviar BRN com Seguranca</h2>
+
+            <label>Endereco de destino:</label>
+            <input id="destinoInput" placeholder="0x..." type="text">
+
+            <label>Quantidade de BRN:</label>
+            <input id="valorEnvioInput" type="number" placeholder="Ex: 10" step="0.0001">
+
+            <div id="avisoTransferencia" class="aviso"></div>
+
+            <button class="ok" onclick="iniciarTransferencia()">Validar e Enviar</button>
+        </div>
+
+        <!-- Formulario de Nova Ordem P2P -->
+        <div class="box">
+            <h2>Criar Ordem de Troca P2P</h2>
+
+            <label>Token que voce oferece:</label>
+            <select id="tokenOferecidoSelect"><option value="BRN">BRN</option></select>
+
+            <label>Token que voce quer receber:</label>
+            <select id="tokenDesejadoSelect"><option value="USDC">USDC</option></select>
+
+            <label>Quantidade oferecida (BRN):</label>
+            <input id="valorOferecidoInput" type="number" placeholder="Ex: 100" step="0.01">
+
+            <label>Quantidade desejada (USDC):</label>
+            <input id="valorDesejadoInput" type="number" placeholder="Ex: 50" step="0.01">
+
+            <button onclick="gerarContratoAutomatico(this)">Criar Ordem On-Chain</button>
+        </div>
+
+        <!-- Mural de Ordens -->
+        <div class="box">
+            <h2>Mural de Ordens</h2>
+            <div id="muralOrdens">
+                <p style="color:#94a3b8;">Nenhuma ordem ativa no momento.</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bibliotecas -->
+    <script src="https://cdn.jsdelivr.net/npm/ethers@5.7.2/dist/ethers.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>

@@ -1,6 +1,8 @@
 """
 Modulo de tunel NGROK para expor o servidor local na internet.
 Requer: pip install pyngrok
+
+Compativel com pyngrok antigo (parametro hostname) e novo (parametro domain).
 """
 from __future__ import annotations
 import logging
@@ -35,16 +37,37 @@ class NgrokTunnel:
 
         conf.get_default().auth_token = self._token
 
-        kwargs = {"schemes": ["https"]}
+        base_kwargs = {"schemes": ["https"]}
+
+        # Monta a lista de tentativas: domain (novo), hostname (antigo), e
+        # por fim sem dominio fixo como ultimo recurso.
+        tentativas: list[dict] = []
         if self._domain:
-            kwargs["domain"] = self._domain
+            tentativas.append({**base_kwargs, "domain": self._domain})
+            tentativas.append({**base_kwargs, "hostname": self._domain})
+        tentativas.append(base_kwargs)
 
-        self._tunnel = ngrok.connect(self._target, **kwargs)
-        self._public_url = self._tunnel.public_url
+        ultimo_erro = None
+        for kwargs in tentativas:
+            try:
+                log.info(f"[NGROK] Tentando conectar com {list(kwargs.keys())}...")
+                self._tunnel = ngrok.connect(self._target, **kwargs)
+                self._public_url = self._tunnel.public_url
+                log.warning("ngrok.up | public_url=%s | local=%s",
+                            self._public_url, self._target)
+                return self._public_url
+            except TypeError as e:
+                # pyngrok nao aceita esse parametro -> tenta o proximo
+                log.info(f"[NGROK] Parametro nao suportado, tentando outro: {e}")
+                ultimo_erro = e
+                continue
+            except Exception as e:
+                # Erro de rede / dominio ocupado / etc
+                log.warning(f"[NGROK] Falha com {list(kwargs.keys())}: {e}")
+                ultimo_erro = e
+                continue
 
-        log.warning("ngrok.up | public_url=%s | local=%s",
-                    self._public_url, self._target)
-        return self._public_url
+        raise RuntimeError(f"Falha ao iniciar ngrok: {ultimo_erro}")
 
     def close(self):
         if self._tunnel is not None:

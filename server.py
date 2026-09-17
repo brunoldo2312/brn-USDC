@@ -4,7 +4,8 @@ import os
 import sys
 import time
 import logging
-from aiohttp import web, WSMsgType
+import webbrowser
+from aiohttp import web, WSMsgType, ClientSession, ClientTimeout
 
 logging.basicConfig(
     level=logging.INFO,
@@ -19,7 +20,10 @@ RATE_JANELA = 10
 RATE_MAX = 60
 NGROK_TOKEN_FILE = "ngrok_token.txt"
 NGROK_DOMAIN_FILE = "ngrok_domain.txt"
+NAVEGADOR_FILE = "navegador.txt"
 
+# Quando empacotado (PyInstaller) -> sys._MEIPASS (bundle interno)
+# Quando rodando como .py -> pasta do próprio arquivo
 if getattr(sys, "frozen", False):
     DIR = sys._MEIPASS
 else:
@@ -98,7 +102,7 @@ def checar_rate_limit(ip: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Validacao
+# Validacao de ordem
 # ---------------------------------------------------------------------------
 CAMPOS_OBRIGATORIOS = [
     "hash", "criador", "contratoAddress",
@@ -259,6 +263,73 @@ async def tarefa_limpeza(app):
 
 
 # ---------------------------------------------------------------------------
+# Localiza os arquivos .txt corretamente (.py ou .exe)
+# ---------------------------------------------------------------------------
+def _pasta_config():
+    """
+    - Rodando como .py    -> pasta do próprio server.py
+    - Rodando como .exe   -> pasta onde está o .exe (não o bundle temporário)
+    """
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def _ler_arquivo(nome: str) -> str | None:
+    """Le um arquivo de texto da pasta de config (navegador.txt, etc)."""
+    caminho = os.path.join(_pasta_config(), nome)
+    if not os.path.exists(caminho):
+        return None
+    try:
+        with open(caminho, "r", encoding="utf-8") as f:
+            conteudo = f.read().strip()
+            return conteudo or None
+    except Exception as e:
+        log.warning(f"[CONFIG] Falha lendo {nome}: {e}")
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Abrir navegador quando o tunel estiver pronto
+# ---------------------------------------------------------------------------
+async def _abrir_navegador_quando_pronto(url: str, navegador_path: str | None,
+                                          tentativas: int = 25):
+    """Espera o /health publico responder e então abre o navegador."""
+    alvo = url.rstrip("/") + "/health"
+    log.info(f"[BROWSER] Aguardando tunel responder em {alvo} ...")
+
+    pronto = False
+    for i in range(tentativas):
+        try:
+            timeout = ClientTimeout(total=4)
+            async with ClientSession(timeout=timeout) as s:
+                async with s.get(alvo) as r:
+                    if r.status == 200:
+                        pronto = True
+                        break
+        except Exception:
+            pass
+        await asyncio.sleep(1.5)
+
+    if not pronto:
+        log.warning("[BROWSER] /health nao respondeu, abrindo mesmo assim")
+
+    try:
+        if navegador_path and os.path.exists(navegador_path):
+            webbrowser.register(
+                "custom", None,
+                webbrowser.BackgroundBrowser(navegador_path)
+            )
+            webbrowser.get("custom").open(url)
+            log.info(f"[BROWSER] Aberto com {navegador_path}: {url}")
+        else:
+            webbrowser.open(url)
+            log.info(f"[BROWSER] Aberto no padrao: {url}")
+    except Exception as e:
+        log.warning(f"[BROWSER] Falha ao abrir navegador: {e}")
+
+
+# ---------------------------------------------------------------------------
 # Startup / Shutdown
 # ---------------------------------------------------------------------------
 async def iniciar_tasks(app):
@@ -266,26 +337,28 @@ async def iniciar_tasks(app):
     app["task_limpeza"] = asyncio.create_task(tarefa_limpeza(app))
     log.info("[STARTUP] Tasks iniciadas")
 
-    token_path = os.path.join(DIR, NGROK_TOKEN_FILE)
-    domain_path = os.path.join(DIR, NGROK_DOMAIN_FILE)
+    # 1) Variáveis de ambiente têm prioridade (útil para deploy)
+    token  = os.environ.get("NGROK_TOKEN")
+    domain = os.environ.get("NGROK_DOMAIN")
 
-    if not os.path.exists(token_path):
+    # 2) Se não vieram do ambiente, procura os .txt ao lado do .exe / .py
+    if not token:
+        token = _ler_arquivo(NGROK_TOKEN_FILE)
+        if token:
+            log.info(f"[NGROK] Token carregado de {NGROK_TOKEN_FILE}")
+        else:
+            log.warning(f"[NGROK] {NGROK_TOKEN_FILE} nao encontrado")
+
+    if not domain:
+        domain = _ler_arquivo(NGROK_DOMAIN_FILE)
+        if domain:
+            log.info(f"[NGROK] Dominio carregado de {NGROK_DOMAIN_FILE}")
+
+    if not token:
         log.warning("[NGROK] Token nao encontrado - modo local apenas")
         return
 
     try:
-        with open(token_path, "r", encoding="utf-8") as f:
-            token = f.read().strip()
-
-        domain = None
-        if os.path.exists(domain_path):
-            with open(domain_path, "r", encoding="utf-8") as f:
-                domain = f.read().strip() or None
-
-        if not token:
-            log.warning("[NGROK] Token vazio - modo local apenas")
-            return
-
         from ngrok_tunnel import NgrokTunnel
         port = int(os.environ.get("PORT", 8080))
         TUNEL = NgrokTunnel(
@@ -295,6 +368,17 @@ async def iniciar_tasks(app):
         )
         url = TUNEL.start()
         log.info(f"[NGROK] URL publica: {url}")
+
+        # Le navegador configurado
+        navegador = _ler_arquivo(NAVEGADOR_FILE)
+        if navegador and navegador.lower() == "padrao":
+            navegador = None
+        if navegador:
+            log.info(f"[BROWSER] Navegador configurado: {navegador}")
+
+        # Abre o navegador em background (nao bloqueia o servidor)
+        asyncio.create_task(_abrir_navegador_quando_pronto(url, navegador))
+
     except Exception as e:
         log.error(f"[NGROK] Falha ao iniciar tunel: {e}")
         TUNEL = None
@@ -311,7 +395,10 @@ async def parar_tasks(app):
 
     global TUNEL
     if TUNEL:
-        TUNEL.close()
+        try:
+            TUNEL.close()
+        except Exception as e:
+            log.warning(f"[SHUTDOWN] Falha fechando ngrok: {e}")
         TUNEL = None
     log.info("[SHUTDOWN] Encerrado")
 
@@ -335,4 +422,4 @@ def criar_app():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     log.info(f"Servidor iniciando em http://localhost:{port}")
-    web.run_app(criar_app(), host="0.0.0.0", port=port, print=None)
+    web.run_app(criar_app(), host="0.0.0.0", port=port)

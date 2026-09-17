@@ -27,6 +27,12 @@ class NgrokTunnel:
                 "pyngrok nao instalado. Rode: pip install pyngrok"
             ) from e
 
+        # IMPORTANTE: limpa qualquer configuracao anterior do ngrok
+        try:
+            ngrok.kill()
+        except Exception:
+            pass
+
         conf.get_default().auth_token = self._token
 
         kwargs = {"schemes": ["https"]}

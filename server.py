@@ -1,12 +1,3 @@
-#!/usr/bin/env python3
-"""
-Servidor WebSocket + HTTP para a Carteira BRN P2P.
-- Serve arquivos estaticos (index.html, app.js)
-- Mural P2P sincronizado via WebSocket em /ws
-- Tunel Ngrok OPCIONAL para acesso de qualquer lugar
-Requer: pip install aiohttp pyngrok
-"""
-
 import asyncio
 import json
 import os
@@ -26,11 +17,10 @@ log = logging.getLogger("brn-p2p")
 # ---------------------------------------------------------------------------
 RATE_JANELA = 10
 RATE_MAX = 60
-EXPIRE_PADRAO = 86400
 NGROK_TOKEN_FILE = "ngrok_token.txt"
+NGROK_DOMAIN_FILE = "ngrok_domain.txt"
 
-# Detecta se esta rodando como .exe (PyInstaller) ou como .py
-if getattr(sys, 'frozen', False):
+if getattr(sys, "frozen", False):
     DIR = sys._MEIPASS
 else:
     DIR = os.path.dirname(os.path.abspath(__file__))
@@ -71,7 +61,10 @@ async def index_handler(request):
 
 
 async def app_js_handler(request):
-    return web.FileResponse(os.path.join(DIR, "app.js"))
+    return web.FileResponse(
+        os.path.join(DIR, "app.js"),
+        headers={"Content-Type": "application/javascript; charset=utf-8"},
+    )
 
 
 async def mural_rest_handler(request):
@@ -87,7 +80,7 @@ async def health_handler(request):
         "clientes_ws": len(CLIENTES_WS),
         "ordens_ativas": len(MURAL),
         "public_url": public_url,
-        "timestamp": int(time.time())
+        "timestamp": int(time.time()),
     })
 
 
@@ -105,31 +98,55 @@ def checar_rate_limit(ip: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Validacao de ordem
+# Validacao
 # ---------------------------------------------------------------------------
 CAMPOS_OBRIGATORIOS = [
     "hash", "criador", "contratoAddress",
-    "valorOferecido", "valorDesejado", "expiracao"
+    "valorOferecido", "valorDesejado", "expiracao",
 ]
 
 
-def validar_ordem(ordem: dict) -> tuple:
+def validar_ordem(ordem: dict):
     if not isinstance(ordem, dict):
-        return False, "Ordem nao e um objeto"
+        return False, "Ordem nao e um objecto"
     for campo in CAMPOS_OBRIGATORIOS:
         if campo not in ordem or not ordem[campo]:
             return False, f"Campo obrigatorio ausente: {campo}"
     end = ordem.get("contratoAddress", "")
     if not (isinstance(end, str) and end.startswith("0x") and len(end) == 42):
         return False, "contratoAddress invalido"
-    if ordem["expiracao"] <= int(time.time()):
-        return False, "Ordem ja expirada"
+    try:
+        if int(ordem["expiracao"]) <= int(time.time()):
+            return False, "Ordem ja expirada"
+    except (ValueError, TypeError):
+        return False, "expiracao invalida"
     try:
         if float(ordem["valorOferecido"]) <= 0 or float(ordem["valorDesejado"]) <= 0:
             return False, "Valores devem ser positivos"
     except (ValueError, TypeError):
         return False, "Valores invalidos"
     return True, ""
+
+
+# ---------------------------------------------------------------------------
+# Broadcast
+# ---------------------------------------------------------------------------
+async def broadcast(mensagem: dict):
+    if not CLIENTES_WS:
+        return
+    payload = json.dumps(mensagem)
+    async with LOCK:
+        clientes = list(CLIENTES_WS)
+    mortos = []
+    for ws in clientes:
+        try:
+            await ws.send_str(payload)
+        except Exception:
+            mortos.append(ws)
+    if mortos:
+        async with LOCK:
+            for ws in mortos:
+                CLIENTES_WS.discard(ws)
 
 
 # ---------------------------------------------------------------------------
@@ -163,7 +180,6 @@ async def ws_handler(request):
 
             tipo = dados.get("tipo")
 
-            # PUBLICAR ORDEM
             if tipo == "publicar_ordem":
                 if not checar_rate_limit(ip):
                     await ws.send_json({"tipo": "erro", "msg": "Rate limit excedido"})
@@ -178,7 +194,6 @@ async def ws_handler(request):
                 log.info(f"[MURAL] Nova ordem {ordem['hash'][:10]}...")
                 await broadcast({"tipo": "nova_ordem", "ordem": ordem})
 
-            # CANCELAR ORDEM
             elif tipo == "cancelar_ordem":
                 h = dados.get("hash")
                 if not h:
@@ -187,10 +202,9 @@ async def ws_handler(request):
                 async with LOCK:
                     removida = MURAL.pop(h, None)
                 if removida:
-                    log.info(f"[MURAL] Ordem cancelada {h[:10]}...")
+                    log.info(f"[MURAL] Cancelada {h[:10]}...")
                     await broadcast({"tipo": "ordem_cancelada", "hash": h})
 
-            # ORDEM EXECUTADA
             elif tipo == "ordem_executada":
                 h = dados.get("hash")
                 if not h:
@@ -199,21 +213,20 @@ async def ws_handler(request):
                 tx = dados.get("txHash", "")
                 async with LOCK:
                     MURAL.pop(h, None)
-                log.info(f"[MURAL] Ordem executada {h[:10]}...")
+                log.info(f"[MURAL] Executada {h[:10]}...")
                 await broadcast({"tipo": "ordem_executada", "hash": h, "txHash": tx})
 
-            # PEDIR SNAPSHOT
             elif tipo == "pedir_snapshot":
-                agora = int(time.time())
-                snapshot = [o for o in MURAL.values() if o.get("expiracao", 0) > agora]
-                await ws.send_json({"tipo": "snapshot", "ordens": snapshot})
+                agora2 = int(time.time())
+                snap = [o for o in MURAL.values() if o.get("expiracao", 0) > agora2]
+                await ws.send_json({"tipo": "snapshot", "ordens": snap})
 
-            # PING
             elif tipo == "ping":
                 await ws.send_json({"tipo": "pong", "ts": int(time.time())})
 
             else:
-                await ws.send_json({"tipo": "erro", "msg": f"Tipo desconhecido: {tipo}"})
+                # Ignora tipos desconhecidos (evita loop)
+                pass
 
     finally:
         async with LOCK:
@@ -221,19 +234,6 @@ async def ws_handler(request):
         log.info(f"[WS] Desconectado: {ip} (total={len(CLIENTES_WS)})")
 
     return ws
-
-
-async def broadcast(mensagem: dict):
-    if not CLIENTES_WS:
-        return
-    payload = json.dumps(mensagem)
-    async with LOCK:
-        clientes = list(CLIENTES_WS)
-    for ws in clientes:
-        try:
-            await ws.send_str(payload)
-        except Exception:
-            pass
 
 
 # ---------------------------------------------------------------------------
@@ -254,7 +254,7 @@ async def tarefa_limpeza(app):
             if expiradas:
                 log.info(f"[LIMPEZA] Removidas {len(expiradas)} ordens expiradas")
     except asyncio.CancelledError:
-        log.info("[LIMPEZA] Task cancelada")
+        log.info("[LIMPEZA] Cancelada")
         raise
 
 
@@ -266,35 +266,41 @@ async def iniciar_tasks(app):
     app["task_limpeza"] = asyncio.create_task(tarefa_limpeza(app))
     log.info("[STARTUP] Tasks iniciadas")
 
-    # Inicia Ngrok se tiver token
     token_path = os.path.join(DIR, NGROK_TOKEN_FILE)
-    if os.path.exists(token_path):
-        try:
-            with open(token_path, "r", encoding="utf-8") as f:
-                token = f.read().strip()
-            if token:
-                from ngrok_tunnel import NgrokTunnel
-                port = int(os.environ.get("PORT", 8080))
-                TUNEL = NgrokTunnel(token=token, target=f"http://localhost:{port}")
-                public_url = TUNEL.start()
-                print()
-                print("=" * 70)
-                print("  🌐 ACESSO PUBLICO ATIVO (NGROK)")
-                print("=" * 70)
-                print(f"  Compartilhe esta URL: {public_url}")
-                print(f"  Qualquer pessoa no mundo pode acessar.")
-                print("=" * 70)
-                print()
-        except Exception as e:
-            log.error(f"[NGROK] Falha ao iniciar tunel: {e}")
-            print()
-            print(f"  ⚠️  NGROK falhou: {e}")
-            print(f"  O servidor continua funcionando localmente.")
-            print()
+    domain_path = os.path.join(DIR, NGROK_DOMAIN_FILE)
+
+    if not os.path.exists(token_path):
+        log.warning("[NGROK] Token nao encontrado - modo local apenas")
+        return
+
+    try:
+        with open(token_path, "r", encoding="utf-8") as f:
+            token = f.read().strip()
+
+        domain = None
+        if os.path.exists(domain_path):
+            with open(domain_path, "r", encoding="utf-8") as f:
+                domain = f.read().strip() or None
+
+        if not token:
+            log.warning("[NGROK] Token vazio - modo local apenas")
+            return
+
+        from ngrok_tunnel import NgrokTunnel
+        port = int(os.environ.get("PORT", 8080))
+        TUNEL = NgrokTunnel(
+            token=token,
+            target=f"http://localhost:{port}",
+            domain=domain,
+        )
+        url = TUNEL.start()
+        log.info(f"[NGROK] URL publica: {url}")
+    except Exception as e:
+        log.error(f"[NGROK] Falha ao iniciar tunel: {e}")
+        TUNEL = None
 
 
 async def parar_tasks(app):
-    global TUNEL
     task = app.get("task_limpeza")
     if task:
         task.cancel()
@@ -303,22 +309,23 @@ async def parar_tasks(app):
         except asyncio.CancelledError:
             pass
 
+    global TUNEL
     if TUNEL:
         TUNEL.close()
         TUNEL = None
-
-    log.info("[SHUTDOWN] Tasks finalizadas")
+    log.info("[SHUTDOWN] Encerrado")
 
 
 # ---------------------------------------------------------------------------
-# Bootstrap
+# App factory
 # ---------------------------------------------------------------------------
 def criar_app():
     app = web.Application(middlewares=[cors_middleware])
     app.router.add_get("/", index_handler)
+    app.router.add_get("/index.html", index_handler)
     app.router.add_get("/app.js", app_js_handler)
     app.router.add_get("/api/mural", mural_rest_handler)
-    app.router.add_get("/api/health", health_handler)
+    app.router.add_get("/health", health_handler)
     app.router.add_get("/ws", ws_handler)
     app.on_startup.append(iniciar_tasks)
     app.on_cleanup.append(parar_tasks)
@@ -326,25 +333,6 @@ def criar_app():
 
 
 if __name__ == "__main__":
-    import threading
-    import webbrowser
-
     port = int(os.environ.get("PORT", 8080))
-
-    print("=" * 70)
-    print("  CARTEIRA BRN P2P - Servidor WebSocket/HTTP")
-    print("=" * 70)
-    print(f"  HTTP local:  http://localhost:{port}")
-    print(f"  WebSocket:   ws://localhost:{port}/ws")
-    print(f"  Health:      http://localhost:{port}/api/health")
-    print("=" * 70)
-    print()
-
-    # Abre navegador apenas localmente
-    def abrir_navegador():
-        time.sleep(2)
-        webbrowser.open(f"http://localhost:{port}")
-
-    threading.Thread(target=abrir_navegador, daemon=True).start()
-
-    web.run_app(criar_app(), host="0.0.0.0", port=port)
+    log.info(f"Servidor iniciando em http://localhost:{port}")
+    web.run_app(criar_app(), host="0.0.0.0", port=port, print=None)

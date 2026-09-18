@@ -5,7 +5,6 @@
 // - Estado "Consultando..." + contador de ordens ativas
 // - Approve automático de BRN (Factory) e USDC (Escrow)
 // - Fallback de múltiplos RPCs + timeouts + leitura paralela
-// - Saldos com auto-refresh a cada 20s + fallback de RPC
 // ============================================================
 
 // --- CONFIGURACOES (POLYGON MAINNET) ---
@@ -16,8 +15,6 @@ const TOKEN_USDC_ADDRESS     = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174";
 const BRN_DECIMALS   = 18;
 const USDC_DECIMALS  = 6;
 const POLYGON_CHAIN_ID = 137;
-
-const SALDOS_REFRESH_MS = 20000;  // 20s
 
 // RPCs publicos de fallback (testados em ordem ate um responder)
 const RPCS_FALLBACK = [
@@ -56,7 +53,6 @@ let tentativasReconexao = 0;
 const MAX_TENTATIVAS = 10;
 let pingInterval = null;
 let blockchainSyncInterval = null;
-let saldosInterval = null;
 let rpcProviderCache = null; // RPC que funcionou, para reutilizar
 
 // ============================================================
@@ -88,7 +84,7 @@ function mostrarAviso(id, msg, tipo) {
 }
 
 // ------------------------------------------------------------
-// Resolve qual RPC usar (prefere MetaMask, cai para publico)
+// Resolve qual RPC usar
 // ------------------------------------------------------------
 async function obterRpcProvider() {
   if (provider) return provider;                 // MetaMask conectado = melhor
@@ -111,31 +107,6 @@ async function obterRpcProvider() {
     }
   }
   throw new Error("Todos os RPCs falharam");
-}
-
-// ------------------------------------------------------------
-// Provider "somente leitura" dedicado a saldos
-//   - Tenta MetaMask primeiro
-//   - Se falhar, usa o cache publico
-// ------------------------------------------------------------
-async function obterProviderParaSaldos() {
-  if (provider) {
-    try {
-      // Testa rapidamente se o MetaMask responde
-      await Promise.race([
-        provider.getBlockNumber(),
-        new Promise((_, rej) =>
-          setTimeout(() => rej(new Error("metamask timeout")), 3000)
-        ),
-      ]);
-      return provider;
-    } catch (e) {
-      console.warn("[bruno] MetaMask lento, usando RPC publico p/ saldos");
-    }
-  }
-  // Reaproveita o cache ou testa os publicos
-  if (rpcProviderCache) return rpcProviderCache;
-  return await obterRpcProvider();
 }
 
 // ============================================================
@@ -181,9 +152,6 @@ async function conectarCarteira() {
     await carregarSaldos();
     await sincronizarMuralDiretoDaBlockchain();
 
-    // >>> Auto-refresh dos saldos <<<
-    iniciarAutoRefreshSaldos();
-
     if (window.ethereum.removeAllListeners) {
       window.ethereum.removeAllListeners("accountsChanged");
       window.ethereum.removeAllListeners("chainChanged");
@@ -197,87 +165,26 @@ async function conectarCarteira() {
 }
 
 // ============================================================
-// Auto-refresh dos saldos
-// ============================================================
-function iniciarAutoRefreshSaldos() {
-  if (saldosInterval) clearInterval(saldosInterval);
-  saldosInterval = setInterval(() => {
-    if (userAddress) carregarSaldos();
-  }, SALDOS_REFRESH_MS);
-  console.log(`[bruno] Auto-refresh de saldos ativado (${SALDOS_REFRESH_MS}ms)`);
-}
-
-// ============================================================
-// Saldos (com fallback de RPC + timeout + erro visivel)
+// Saldos
 // ============================================================
 async function carregarSaldos() {
-  if (!userAddress) return;
-
-  const elBRN  = document.getElementById("saldoBRN");
-  const elUSDC = document.getElementById("saldoUSDT");
-  const elPOL  = document.getElementById("saldoPOL");
-
-  // Mostra "..." durante carregamento se ainda nao tem valor
-  if (elBRN  && elBRN.innerText  === "--") elBRN.innerText  = "...";
-  if (elUSDC && elUSDC.innerText === "--") elUSDC.innerText = "...";
-  if (elPOL  && elPOL.innerText  === "--") elPOL.innerText  = "...";
-
-  let rpc;
+  if (!provider || !userAddress) return;
   try {
-    rpc = await obterProviderParaSaldos();
-  } catch (e) {
-    console.error("[bruno] Sem RPC para saldos:", e);
-    if (elBRN)  elBRN.innerText  = "erro RPC";
-    if (elUSDC) elUSDC.innerText = "erro RPC";
-    if (elPOL)  elPOL.innerText  = "erro RPC";
-    return;
-  }
+    const brn = new ethers.Contract(TOKEN_BRN_ADDRESS, ERC20_ABI, provider);
+    const brnBal = await brn.balanceOf(userAddress);
+    const elBRN = document.getElementById("saldoBRN");
+    if (elBRN) elBRN.innerText = `${parseFloat(ethers.utils.formatUnits(brnBal, BRN_DECIMALS)).toFixed(4)} BRN`;
 
-  // --- BRN ---
-  try {
-    const brn = new ethers.Contract(TOKEN_BRN_ADDRESS, ERC20_ABI, rpc);
-    const brnBal = await Promise.race([
-      brn.balanceOf(userAddress),
-      new Promise((_, rej) => setTimeout(() => rej(new Error("timeout BRN")), 8000)),
-    ]);
-    if (elBRN) {
-      elBRN.innerText =
-        `${parseFloat(ethers.utils.formatUnits(brnBal, BRN_DECIMALS)).toFixed(4)} BRN`;
-    }
-  } catch (e) {
-    console.warn("[bruno] Saldo BRN falhou:", e.message);
-    if (elBRN && elBRN.innerText === "...") elBRN.innerText = "erro BRN";
-  }
+    const usdc = new ethers.Contract(TOKEN_USDC_ADDRESS, ERC20_ABI, provider);
+    const usdcBal = await usdc.balanceOf(userAddress);
+    const elUSDC = document.getElementById("saldoUSDT");
+    if (elUSDC) elUSDC.innerText = `${parseFloat(ethers.utils.formatUnits(usdcBal, USDC_DECIMALS)).toFixed(2)} USDC`;
 
-  // --- USDC ---
-  try {
-    const usdc = new ethers.Contract(TOKEN_USDC_ADDRESS, ERC20_ABI, rpc);
-    const usdcBal = await Promise.race([
-      usdc.balanceOf(userAddress),
-      new Promise((_, rej) => setTimeout(() => rej(new Error("timeout USDC")), 8000)),
-    ]);
-    if (elUSDC) {
-      elUSDC.innerText =
-        `${parseFloat(ethers.utils.formatUnits(usdcBal, USDC_DECIMALS)).toFixed(2)} USDC`;
-    }
-  } catch (e) {
-    console.warn("[bruno] Saldo USDC falhou:", e.message);
-    if (elUSDC && elUSDC.innerText === "...") elUSDC.innerText = "erro USDC";
-  }
-
-  // --- POL ---
-  try {
-    const polBal = await Promise.race([
-      rpc.getBalance(userAddress),
-      new Promise((_, rej) => setTimeout(() => rej(new Error("timeout POL")), 8000)),
-    ]);
-    if (elPOL) {
-      elPOL.innerText =
-        `${parseFloat(ethers.utils.formatEther(polBal)).toFixed(4)} POL`;
-    }
-  } catch (e) {
-    console.warn("[bruno] Saldo POL falhou:", e.message);
-    if (elPOL && elPOL.innerText === "...") elPOL.innerText = "erro POL";
+    const polBal = await provider.getBalance(userAddress);
+    const elPOL = document.getElementById("saldoPOL");
+    if (elPOL) elPOL.innerText = `${parseFloat(ethers.utils.formatEther(polBal)).toFixed(4)} POL`;
+  } catch (err) {
+    console.error("[bruno] Erro saldos:", err);
   }
 }
 
@@ -287,6 +194,7 @@ async function carregarSaldos() {
 function marcarMuralCarregando() {
   const muralEl = document.getElementById("muralOrdens");
   if (!muralEl) return;
+  // Só mostra "consultando" se ainda não há cards renderizados
   if (muralEl.querySelector("[data-escrow]")) return;
   muralEl.innerHTML =
     '<p style="color:#94a3b8;">Consultando a blockchain...</p>';
@@ -352,7 +260,7 @@ async function sincronizarMuralDiretoDaBlockchain() {
   } catch (e) {
     console.error("[bruno] Sem RPC disponivel:", e);
     rpcProviderCache = null;
-    return;
+    return; // mantém o que já está na tela
   }
 
   try {
@@ -367,6 +275,7 @@ async function sincronizarMuralDiretoDaBlockchain() {
       ),
     ]);
 
+    // Lê os últimos 100 em paralelo
     const ultimos = todos.slice(-100);
     const resultados = await Promise.all(
       ultimos.map(async (endereco) => {
@@ -404,7 +313,7 @@ async function sincronizarMuralDiretoDaBlockchain() {
         '<p style="color:#f87171;">Nao foi possivel ler a blockchain agora. ' +
         'Nova tentativa em 30s...</p>';
     }
-    rpcProviderCache = null;
+    rpcProviderCache = null; // força testar outro RPC na próxima rodada
   }
 }
 
@@ -426,6 +335,7 @@ async function gerarContratoAutomatico(botao) {
     const vOfWei = ethers.utils.parseUnits(vOf.toString(), BRN_DECIMALS);
     const vDeWei = ethers.utils.parseUnits(vDe.toString(), USDC_DECIMALS);
 
+    // 1) APPROVE do BRN para a Factory
     const brn = new ethers.Contract(TOKEN_BRN_ADDRESS, ERC20_ABI, signer);
     const allow = await brn.allowance(userAddress, ESCROW_FACTORY_ADDRESS);
     if (allow.lt(vOfWei)) {
@@ -434,6 +344,7 @@ async function gerarContratoAutomatico(botao) {
       await txA.wait();
     }
 
+    // 2) Cria o escrow
     const factory = new ethers.Contract(ESCROW_FACTORY_ADDRESS, FACTORY_ABI, signer);
     const tx = await factory.criarNovoContratoEscrow(
       TOKEN_BRN_ADDRESS, TOKEN_USDC_ADDRESS, vOfWei, vDeWei
@@ -463,6 +374,7 @@ async function executarTrocaNoContrato(enderecoEscrow) {
     );
     const d = await escrowView.obterDados();
 
+    // 1) APPROVE do USDC para o escrow
     const usdc = new ethers.Contract(TOKEN_USDC_ADDRESS, ERC20_ABI, signer);
     const allow = await usdc.allowance(userAddress, enderecoEscrow);
     if (allow.lt(d.valorDesejado)) {
@@ -471,6 +383,7 @@ async function executarTrocaNoContrato(enderecoEscrow) {
       await txA.wait();
     }
 
+    // 2) Executa
     const escrow = new ethers.Contract(enderecoEscrow, ESCROW_INDIVIDUAL_ABI, signer);
     const tx = await escrow.executarTroca();
     await tx.wait();
@@ -614,6 +527,7 @@ function iniciarConexaoWebSocket() {
       case "ordem_cancelada":
       case "ordem_executada":
       case "ordem_expirada":
+        // Fonte da verdade = blockchain -> relê e re-renderiza
         sincronizarMuralDiretoDaBlockchain();
         break;
       case "erro":
@@ -641,6 +555,7 @@ function iniciarConexaoWebSocket() {
 // ============================================================
 window.addEventListener("DOMContentLoaded", () => {
   iniciarConexaoWebSocket();
+  // Dispara logo de cara, sem esperar o WS
   sincronizarMuralDiretoDaBlockchain();
   blockchainSyncInterval = setInterval(sincronizarMuralDiretoDaBlockchain, 30000);
 });

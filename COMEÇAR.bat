@@ -5,7 +5,7 @@ color 0A
 cd /d "%~dp0"
 
 :: ============================================================
-:: URL DO NGROK (apenas exibicao; o server.py abre o navegador)
+:: URL DO NGROK (Apenas esta URL sera aberta no navegador)
 :: ============================================================
 set NGROK_URL=https://seventy-rigging-ploy.ngrok-free.dev
 
@@ -31,6 +31,7 @@ if not exist "navegador.txt" (
     )
 )
 
+:: Le o navegador configurado
 set "NAVEGADOR="
 for /f "usebackq tokens=*" %%n in ("navegador.txt") do set "NAVEGADOR=%%n"
 if "!NAVEGADOR!"=="" set "NAVEGADOR=padrao"
@@ -39,92 +40,91 @@ echo    Navegador configurado: !NAVEGADOR!
 echo.
 
 :: ============================================================
-:: PASSO 2 - VERIFICA ARQUIVOS OBRIGATORIOS (.txt)
+:: PASSO 2 - VERIFICA DEPENDENCIAS
 :: ============================================================
-echo [1/2] Verificando arquivos...
-if not exist "ngrok_token.txt"  ( echo    ERRO: ngrok_token.txt nao encontrado & pause & exit /b 1 )
-if not exist "ngrok_domain.txt" ( echo    ERRO: ngrok_domain.txt nao encontrado & pause & exit /b 1 )
+echo [1/4] Verificando Python...
+python --version >nul 2>&1
+if errorlevel 1 goto SEM_PYTHON
+echo    OK
+echo.
+
+echo [2/4] Verificando aiohttp...
+python -c "import aiohttp" >nul 2>&1
+if errorlevel 1 python -m pip install aiohttp --quiet
+echo    OK
+echo.
+
+echo [3/4] Verificando pyngrok...
+python -c "import pyngrok" >nul 2>&1
+if errorlevel 1 python -m pip install pyngrok --quiet
 echo    OK
 echo.
 
 :: ============================================================
-:: PASSO 3 - DECIDE O MODO DE EXECUCAO
-::   1) Se CarteiraBRN.exe existir -> usa o .exe (modo compilado)
-::   2) Senao, se server.py existir -> usa Python (modo dev)
-::   3) Senao -> erro
+:: PASSO 3 - VERIFICA ARQUIVOS DO PROJETO
 :: ============================================================
-set "MODO="
-set "COMANDO="
-
-if exist "CarteiraBRN.exe" (
-    set "MODO=EXE"
-    set "COMANDO=CarteiraBRN.exe"
-    goto VERIFICAR_DEPENDENCIAS
-)
-
-if exist "server.py" (
-    echo    CarteiraBRN.exe nao encontrado - rodando via Python.
-    echo.
-    python --version >nul 2>&1
-    if errorlevel 1 (
-        echo    ERRO: Python nao esta instalado ou nao esta no PATH.
-        echo    Instale em https://www.python.org/downloads/
-        echo    Ou compile primeiro rodando BUILD.bat.
-        pause
-        start https://www.python.org/downloads/
-        exit /b 1
-    )
-    set "MODO=PY"
-    set "COMANDO=python server.py"
-
-    echo    Verificando dependencias Python...
-    python -c "import aiohttp" >nul 2>&1
-    if errorlevel 1 (
-        echo    Instalando aiohttp...
-        python -m pip install aiohttp --quiet
-    )
-    python -c "import pyngrok" >nul 2>&1
-    if errorlevel 1 (
-        echo    Instalando pyngrok...
-        python -m pip install pyngrok --quiet
-    )
-    echo    OK
-    goto VERIFICAR_DEPENDENCIAS
-)
-
-echo    ERRO: nao encontrei CarteiraBRN.exe nem server.py.
-echo    Coloque este .bat na pasta do projeto.
-pause
-exit /b 1
-
-:VERIFICAR_DEPENDENCIAS
+echo [4/4] Verificando arquivos...
+if not exist "server.py"         ( echo    ERRO: server.py nao encontrado & pause & exit /b 1 )
+if not exist "ngrok_tunnel.py"   ( echo    ERRO: ngrok_tunnel.py nao encontrado & pause & exit /b 1 )
+if not exist "index.html"        ( echo    ERRO: index.html nao encontrado & pause & exit /b 1 )
+if not exist "app.js"            ( echo    ERRO: app.js nao encontrado & pause & exit /b 1 )
+if not exist "ngrok_token.txt"   ( echo    ERRO: ngrok_token.txt nao encontrado & pause & exit /b 1 )
+if not exist "ngrok_domain.txt"  ( echo    ERRO: ngrok_domain.txt nao encontrado & pause & exit /b 1 )
+echo    OK
 echo.
-echo [2/2] Iniciando servidor...
+
+:: ============================================================
+:: PASSO 4 - INICIA O SERVIDOR E ABRE O NAVEGADOR
+:: ============================================================
+echo Iniciando servidor...
 echo.
 echo ============================================================
-echo    SERVIDOR RODANDO
+echo    SERVIDOR RODANDO LOCALMENTE
 echo ============================================================
 echo.
-echo    Modo:        !MODO!
 echo    Local:       http://localhost:8080
 echo    URL Publica: !NGROK_URL!
 echo.
-echo    O navegador abrira automaticamente quando o tunel responder.
+echo    O navegador abrira automaticamente na URL PUBLICA em 10 segundos.
+echo    Aguarde o Ngrok conectar...
 echo.
 echo    Para PARAR o servidor: CTRL+C
 echo ============================================================
 echo.
 
-:: ============================================================
-:: PASSO 4 - EXECUTA
-:: ============================================================
-if "!MODO!"=="EXE" (
-    CarteiraBRN.exe
+:: Cria um arquivo temporario que abre o navegador em paralelo
+:: sem travar a execucao do servidor.
+echo @echo off> _abrir.bat
+echo timeout /t 10 /nobreak ^>nul>> _abrir.bat
+
+:: Logica para abrir o navegador configurado ou o padrao
+if /i "!NAVEGADOR!"=="padrao" (
+    echo start "" "!NGROK_URL!">> _abrir.bat
 ) else (
-    python server.py
+    echo if exist "!NAVEGADOR!" (>> _abrir.bat
+    echo     start "" "!NAVEGADOR!" "!NGROK_URL!">> _abrir.bat
+    echo ^) else (>> _abrir.bat
+    echo     start "" "!NGROK_URL!">> _abrir.bat
+    echo ^)>> _abrir.bat
 )
+
+:: Remove o arquivo temporario apos a execucao
+echo del /F /Q "%%~f0" ^>nul 2^>^&1>> _abrir.bat
+
+:: Executa o script de abrir o navegador em paralelo (janela minimizada)
+start "" /MIN cmd /c _abrir.bat
+
+:: Inicia o servidor Python (que tambem inicia o Ngrok internamente)
+python server.py
 
 echo.
 echo Servidor parado.
 pause
 exit /b 0
+
+
+:SEM_PYTHON
+echo    ERRO: Python nao encontrado!
+pause
+start https://www.python.org/downloads/
+exit /b 1

@@ -1,3 +1,11 @@
+# BRN-P2P — Manual do Projeto
+
+## Visão geral
+Servidor assíncrono (aiohttp) que serve um frontend estático e expõe
+uma API REST + WebSocket para um mercado P2P "off-chain" (ordens ficam
+em memória, sem blockchain). O túnel público é feito via ngrok.
+
+## Estrutura
 # BRN P2P v2.0 — Mural Híbrido
 
 P2P de USDC ↔ BRL com **dois murais rodando em paralelo**:

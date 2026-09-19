@@ -1,3 +1,121 @@
+# BRN P2P v2.0 — Mural Híbrido
+
+P2P de USDC ↔ BRL com **dois murais rodando em paralelo**:
+
+- **Off-chain** — instantâneo, grátis, persistido em SQLite.
+- **On-chain** — ancorado na Polygon via evento, imune a qualquer queda do servidor.
+
+## 🚀 Setup em 6 passos
+
+### 1. Deploy do contrato
+- Abra https://remix.ethereum.org
+- Cole `contracts/EscrowP2POffChain.sol`
+- Compiler: **0.8.20+**, EVM **paris**
+- Deploy na Polygon com:
+  - `_usdcToken`: `0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174`
+  - `_admin`: seu endereço
+- Copie o endereço do contrato
+
+### 2. Configurar variáveis
+```bash
+export CONTRACT_ADDRESS=0xSeuContratoAqui
+export BLOCO_INICIAL=<bloco do deploy>      # opcional, acelera indexação
+export POLYGON_RPC=https://polygon-rpc.com  # opcional
+```
+
+Ou edite `CONFIG.CONTRACT_ADDRESS` no topo de `app.js`.
+
+### 3. Token ngrok
+```bash
+echo "SEU_TOKEN_NGROK" > ngrok_token.txt
+```
+
+### 4. Instalar
+```bash
+pip install -r requirements.txt
+```
+
+### 5. Rodar
+```bash
+python server.py
+```
+
+### 6. Abrir
+- Local: http://localhost:8080
+- Público: veja `/health` para pegar a URL do ngrok
+
+## 📊 Como os dois murais convivem
+
+| Ação | Off-chain | On-chain |
+|------|-----------|----------|
+| Publicar | Grátis, instantâneo | Paga gas (~$0.005) |
+| Sobrevive a restart | ✅ (SQLite) | ✅ (blockchain) |
+| Cancelar | Grátis via WS | Requer tx on-chain |
+| Executar | — | Sempre on-chain |
+| Visível offline | Não | Sim (via RPC) |
+
+Uma ordem pode estar nos dois murais ao mesmo tempo. A UI mostra badge **OC+ON** nesse caso.
+
+## 🔍 Endpoints
+
+| Rota | Descrição |
+|------|-----------|
+| `GET /` | UI |
+| `GET /api/mural` | JSON dos dois murais mesclados |
+| `GET /health` | Status + último bloco indexado + URL ngrok |
+| `WS /ws` | Mural em tempo real |
+
+## 📡 Protocolo WebSocket
+
+**Cliente → Servidor:**
+- `publicar_ordem` `{ordem}`
+- `cancelar_ordem` `{hash}`
+- `ordem_executada` `{hash, txHash}`
+- `pedir_snapshot` `{}`
+- `ping` `{}`
+
+**Servidor → Cliente:**
+- `snapshot` `{ordens: []}`
+- `nova_ordem` `{ordem}` (com `fontes: ["off-chain"]` ou `["on-chain"]`)
+- `ordem_cancelada` `{hash}`
+- `ordem_executada` `{hash, txHash}`
+- `ordem_expirada` `{hash}`
+- `erro` `{msg}`
+
+## 🛡️ Produção — checklist
+
+- [x] EIP-2 (malleability check) no `_recover`
+- [x] Effects antes de interações (reentrancy-safe)
+- [x] Persistência SQLite (mural off-chain sobrevive restart)
+- [x] Indexador on-chain com checkpoint em SQLite
+- [x] Rate limit por IP
+- [x] Validação de campos obrigatórios
+- [x] Allowance infinita (evita approve a cada ordem)
+- [x] Auto-reconexão WS
+- [x] Auto-reconexão RPC
+- [x] Tratamento de `user rejected` (4001)
+- [ ] Auditoria externa do contrato (recomendada antes de mainnet)
+- [ ] HTTPS obrigatório em produção (ngrok já fornece)
+- [ ] Backup periódico do `mural.db`
+
+## 🔧 Manutenção
+
+**Reindexar do zero:**
+```sql
+DELETE FROM estado WHERE chave='ultimo_bloco';
+```
+
+**Ver ordens persistidas:**
+```bash
+sqlite3 mural.db "SELECT hash, criador, expiracao FROM ordens_offchain;"
+```
+
+**Forçar reindexação de um bloco específico:**
+```bash
+export BLOCO_INICIAL=65000000
+rm mural.db   # apaga estado
+python server.py
+```
 📘 MANUAL DO PROJETO — CARTEIRA BRN P2P
 Versão: 1.0
 Rede: Polygon Mainnet (Chain ID 137)

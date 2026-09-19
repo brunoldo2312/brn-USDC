@@ -1,508 +1,220 @@
-// ============================================================
-// BRN P2P — Cliente Web3 (Ethers v5) + WebSocket
-// ============================================================
-
-// ⚙️ CONFIG — ajuste após o deploy do contrato
-const CONFIG = {
-  CONTRACT_ADDRESS: "0x0000000000000000000000000000000000000000", // ← COLE AQUI
-  CHAIN_ID: 137,                     // Polygon Mainnet
-  USDC_ADDRESS: "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
-  DEC_USDC: 6,
-  DEC_COTACAO: 8,                    // cotação salva com 8 casas
-  EXPLORER: "https://polygonscan.com",
-};
-
-const ABI_CONTRACT = [
-  "function executarOrdem((address criador,uint256 valorUSDC,uint256 cotacao,uint256 nonce,uint256 expiracao) _ordem, bytes _assinatura, address _comprador) external",
-  "function cancelarOrdemOffChain(uint256 _nonce) external",
-  "function nonceUtilizado(address,uint256) view returns (bool)",
-  "function taxaAplicacao() view returns (uint256)"
-];
-
-const ABI_ERC20 = [
-  "function balanceOf(address) view returns (uint256)",
-  "function allowance(address,address) view returns (uint256)",
-  "function approve(address,uint256) returns (bool)",
-  "function decimals() view returns (uint8)"
-];
-
-// Estado global
-let provider, signer, endereco, contrato, usdcContrato;
-let ws, wsReconnectTimer;
-let ordensMural = {};   // hash -> ordem
-const MAX_UINT = "0x" + "f".repeat(64);
-
-// ============================================================
-// UTILITÁRIOS
-// ============================================================
-const $ = (id) => document.getElementById(id);
-
-function paraWei(str, decimals) {
-  const s = String(str).trim().replace(",", ".");
-  if (!/^\d+(\.\d+)?$/.test(s)) throw new Error("Valor inválido");
-  const [i, f = ""] = s.split(".");
-  const fp = (f + "0".repeat(decimals)).slice(0, decimals);
-  return ethers.BigNumber.from(i + fp);
-}
-
-function deWei(big, decimals, casas = 6) {
-  const s = ethers.utils.formatUnits(big, decimals);
-  const n = Number(s);
-  return n.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: casas });
-}
-
-function msgErro(t) {
-  $("mensagem").innerHTML = `<div class="msg msg-erro">❌ ${t}</div>`;
-  setTimeout(() => $("mensagem").innerHTML = "", 6000);
-}
-function msgOk(t) {
-  $("mensagem").innerHTML = `<div class="msg msg-ok">✅ ${t}</div>`;
-  setTimeout(() => $("mensagem").innerHTML = "", 5000);
-}
-function msgAviso(t) {
-  $("mensagem").innerHTML = `<div class="msg msg-aviso">⏳ ${t}</div>`;
-}
-
-function shortAddr(a) { return a.slice(0, 6) + "..." + a.slice(-4); }
-
-// ============================================================
-// INICIALIZAÇÃO
-// ============================================================
-async function init() {
-  if (!window.ethereum) {
-    msgErro("Instale a MetaMask: https://metamask.io");
-    return;
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BRN P2P — Mural Híbrido</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #0f172a; color: #e2e8f0; min-height: 100vh; padding: 20px;
   }
-  if (CONFIG.CONTRACT_ADDRESS === "0x0000000000000000000000000000000000000000") {
-    msgAviso("⚠️ Configure CONFIG.CONTRACT_ADDRESS no app.js");
+  .container { max-width: 1280px; margin: 0 auto; }
+  header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 16px 0; border-bottom: 1px solid #1e293b; margin-bottom: 24px;
   }
-
-  provider = new ethers.providers.Web3Provider(window.ethereum, "any");
-
-  // Listeners de carteira
-  window.ethereum.on("accountsChanged", (contas) => {
-    if (contas.length === 0) { location.reload(); return; }
-    endereco = contas[0];
-    $("endereco-carteira").textContent = shortAddr(endereco);
-    recarregar();
-  });
-  window.ethereum.on("chainChanged", () => location.reload());
-
-  // Se já autorizou antes, reconecta silenciosamente
-  const contas = await provider.listAccounts();
-  if (contas.length > 0) await conectar();
-
-  // Inicia WebSocket
-  conectarWS();
-
-  // Loop de atualização do countdown
-  setInterval(renderizarMural, 1000);
-}
-
-// ============================================================
-// CONECTAR CARTEIRA
-// ============================================================
-async function conectar() {
-  try {
-    await provider.send("eth_requestAccounts", []);
-    const net = await provider.getNetwork();
-    if (Number(net.chainId) !== CONFIG.CHAIN_ID) {
-      msgErro(`Rede errada (chainId ${net.chainId}). Use Polygon Mainnet.`);
-      return;
-    }
-
-    signer = provider.getSigner();
-    endereco = await signer.getAddress();
-
-    contrato = new ethers.Contract(CONFIG.CONTRACT_ADDRESS, ABI_CONTRACT, signer);
-    usdcContrato = new ethers.Contract(CONFIG.USDC_ADDRESS, ABI_ERC20, signer);
-
-    $("btn-conectar").style.display = "none";
-    $("endereco-carteira").textContent = shortAddr(endereco);
-    $("endereco-carteira").style.display = "inline-block";
-
-    await atualizarSaldo();
-    renderizarMural();
-    renderizarMinhas();
-  } catch (e) {
-    if (e.code === 4001) return;
-    msgErro("Falha ao conectar: " + (e.message || e));
+  h1 { font-size: 22px; color: #38bdf8; }
+  h1 span { color: #e2e8f0; font-weight: 300; }
+  .btn {
+    background: #1e293b; color: #e2e8f0; border: 1px solid #334155;
+    padding: 8px 16px; border-radius: 6px; cursor: pointer; font-weight: 500;
+    transition: all .15s;
   }
-}
-
-async function atualizarSaldo() {
-  if (!usdcContrato || !endereco) return;
-  try {
-    const saldo = await usdcContrato.balanceOf(endereco);
-    $("stat-saldo-usdc").textContent = deWei(saldo, CONFIG.DEC_USDC) + " USDC";
-  } catch (e) { console.error(e); }
-}
-
-// ============================================================
-// CRIAR ORDEM (assinatura EIP-712)
-// ============================================================
-async function criarOrdem() {
-  if (!signer) { await conectar(); return; }
-  if (!signer) return;
-
-  const usdcStr = $("venda-usdc").value.trim();
-  const cotStr = $("venda-cotacao").value.trim();
-  const expMin = Number($("venda-expiracao").value);
-
-  if (!usdcStr || !cotStr) { msgErro("Preencha todos os campos"); return; }
-
-  let valorUSDC, cotacao, expiracao, nonce;
-  try {
-    valorUSDC = paraWei(usdcStr, CONFIG.DEC_USDC);
-    cotacao = paraWei(cotStr, CONFIG.DEC_COTACAO);
-  } catch (e) { msgErro("Valores inválidos"); return; }
-
-  if (valorUSDC.lte(0) || cotacao.lte(0)) { msgErro("Valores devem ser positivos"); return; }
-
-  // Confere saldo
-  const saldo = await usdcContrato.balanceOf(endereco);
-  if (saldo.lt(valorUSDC)) {
-    msgErro(`Saldo USDC insuficiente. Você tem ${deWei(saldo, CONFIG.DEC_USDC)} USDC`);
-    return;
+  .btn:hover { background: #334155; }
+  .btn-primary { background: #0284c7; border-color: #0284c7; }
+  .btn-primary:hover { background: #0369a1; }
+  .btn-success { background: #16a34a; border-color: #16a34a; color: white; }
+  .btn-success:hover { background: #15803d; }
+  .btn-danger  { background: #dc2626; border-color: #dc2626; color: white; }
+  .btn-danger:hover  { background: #b91c1c; }
+  .btn-warn    { background: #f59e0b; border-color: #f59e0b; color: white; }
+  .btn-warn:hover    { background: #d97706; }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+  .badge { font-family: monospace; font-size: 12px; color: #34d399;
+           background: #064e3b; padding: 4px 10px; border-radius: 4px; }
+  .grid { display: grid; grid-template-columns: 400px 1fr; gap: 24px; }
+  @media (max-width: 950px) { .grid { grid-template-columns: 1fr; } }
+  .card {
+    background: #1e293b; border: 1px solid #334155; border-radius: 10px;
+    padding: 20px;
   }
-
-  // Aprova contrato (max) se necessário
-  msgAviso("Verificando allowance...");
-  const allowance = await usdcContrato.allowance(endereco, CONFIG.CONTRACT_ADDRESS);
-  if (allowance.lt(valorUSDC)) {
-    try {
-      msgAviso("Aprovando USDC ao contrato...");
-      const tx = await usdcContrato.approve(CONFIG.CONTRACT_ADDRESS, MAX_UINT);
-      await tx.wait();
-      msgOk("Aprovação confirmada.");
-    } catch (e) {
-      if (e.code === 4001) { msgErro("Aprovação cancelada"); return; }
-      msgErro("Falha na aprovação: " + (e.message || e));
-      return;
-    }
+  .card h2 {
+    font-size: 14px; text-transform: uppercase; letter-spacing: .5px;
+    color: #94a3b8; margin-bottom: 16px; font-weight: 600;
   }
-
-  // Nonce único baseado em timestamp (evita colisão)
-  nonce = Math.floor(Date.now() / 1000) * 1000 + Math.floor(Math.random() * 1000);
-  expiracao = Math.floor(Date.now() / 1000) + expMin * 60;
-
-  const domain = {
-    name: "CarteiraBRN_P2P",
-    version: "1",
-    chainId: CONFIG.CHAIN_ID,
-    verifyingContract: CONFIG.CONTRACT_ADDRESS,
-  };
-  const types = {
-    Ordem: [
-      { name: "criador", type: "address" },
-      { name: "valorUSDC", type: "uint256" },
-      { name: "cotacao", type: "uint256" },
-      { name: "nonce", type: "uint256" },
-      { name: "expiracao", type: "uint256" },
-    ],
-  };
-  const value = {
-    criador: endereco,
-    valorUSDC: valorUSDC.toString(),
-    cotacao: cotacao.toString(),
-    nonce: nonce.toString(),
-    expiracao: expiracao.toString(),
-  };
-
-  try {
-    msgAviso("Aguardando assinatura na carteira...");
-    const assinatura = await signer._signTypedData(domain, types, value);
-
-    // O hash usado como chave no mural é o mesmo digest EIP-712
-    const hash = ethers.utils._TypedDataEncoder.hash(domain, types, value);
-
-    const ordem = {
-      hash,
-      criador: endereco,
-      contratoAddress: CONFIG.CONTRACT_ADDRESS,
-      valorOferecido: valorUSDC.toString(),   // USDC em wei (string)
-      valorDesejado: cotacao.toString(),      // cotação * 1e8 (string)
-      valorUSDC: valorUSDC.toString(),
-      cotacao: cotacao.toString(),
-      nonce: nonce.toString(),
-      expiracao,
-      assinatura,
-      chainId: CONFIG.CHAIN_ID,
-    };
-
-    msgAviso("Publicando no mural...");
-    enviarWS({ tipo: "publicar_ordem", ordem });
-
-    $("venda-usdc").value = "";
-    $("venda-cotacao").value = "";
-    $("total-estimado").textContent = "— BRL";
-  } catch (e) {
-    if (e.code === 4001) { msgErro("Assinatura cancelada"); return; }
-    msgErro("Erro ao assinar: " + (e.message || e));
+  .field { margin-bottom: 14px; }
+  .field label { display: block; font-size: 12px; color: #94a3b8; margin-bottom: 6px; }
+  .field input, .field select {
+    width: 100%; background: #0f172a; color: #e2e8f0;
+    border: 1px solid #334155; padding: 10px 12px; border-radius: 6px;
+    font-size: 14px; font-family: inherit;
   }
-}
-
-// ============================================================
-// EXECUTAR ORDEM (comprador)
-// ============================================================
-async function executarOrdem(hash) {
-  const ordem = ordensMural[hash];
-  if (!ordem) { msgErro("Ordem não encontrada"); return; }
-  if (!signer) { await conectar(); return; }
-  if (!signer) return;
-
-  if (ordem.criador.toLowerCase() === endereco.toLowerCase()) {
-    msgErro("Você não pode comprar sua própria ordem");
-    return;
+  .field input:focus, .field select:focus { outline: none; border-color: #0284c7; }
+  .field .hint { font-size: 11px; color: #64748b; margin-top: 4px; }
+  .checkbox { display: flex; align-items: flex-start; gap: 10px; padding: 10px;
+              background: #0f172a; border: 1px solid #334155; border-radius: 6px; }
+  .checkbox input { margin-top: 3px; }
+  .checkbox .label { font-size: 13px; color: #e2e8f0; }
+  .checkbox .desc  { font-size: 11px; color: #64748b; margin-top: 4px; }
+  .msg { padding: 12px; border-radius: 6px; margin-bottom: 12px; font-size: 14px; }
+  .msg-erro  { background: #7f1d1d; color: #fca5a5; }
+  .msg-ok    { background: #064e3b; color: #6ee7b7; }
+  .msg-aviso { background: #78350f; color: #fcd34d; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  thead th {
+    text-align: left; font-size: 11px; text-transform: uppercase;
+    color: #64748b; padding: 8px 6px; border-bottom: 1px solid #334155;
+    letter-spacing: .4px;
   }
-
-  const totalBRL = (Number(ordem.valorUSDC) / 1e6) * (Number(ordem.cotacao) / 1e8);
-  if (!confirm(
-    `Confirmar compra?\n\n` +
-    `USDC recebido: ${deWei(ethers.BigNumber.from(ordem.valorUSDC), 6)} USDC\n` +
-    `Cotação: ${(Number(ordem.cotacao)/1e8).toFixed(2)} BRL/USDC\n` +
-    `Total: ~R$ ${totalBRL.toFixed(2)}\n\n` +
-    `⚠️ Combine o pagamento em BRL com o vendedor ANTES de confirmar.`
-  )) return;
-
-  try {
-    msgAviso("Enviando transação para executar ordem...");
-    const structOrdem = {
-      criador: ordem.criador,
-      valorUSDC: ordem.valorUSDC,
-      cotacao: ordem.cotacao,
-      nonce: ordem.nonce,
-      expiracao: ordem.expiracao,
-    };
-
-    const tx = await contrato.executarOrdem(structOrdem, ordem.assinatura, endereco);
-    msgAviso(`Tx enviada: ${tx.hash.slice(0, 12)}... aguardando confirmação`);
-    await tx.wait();
-
-    msgOk("Ordem executada com sucesso! USDC recebido.");
-    enviarWS({ tipo: "ordem_executada", hash, txHash: tx.hash });
-    await atualizarSaldo();
-  } catch (e) {
-    if (e.code === 4001) { msgErro("Transação cancelada"); return; }
-    let detalhe = e.message || String(e);
-    if (e.data && e.data.message) detalhe = e.data.message;
-    msgErro("Falha: " + detalhe);
+  tbody td { padding: 12px 6px; border-bottom: 1px solid #1e293b; vertical-align: middle; }
+  tbody tr:hover { background: #263449; }
+  .vazio { text-align: center; padding: 40px 20px; color: #64748b; font-size: 14px; }
+  .stats { display: flex; gap: 12px; margin-top: 16px; }
+  .stat { flex: 1; background: #0f172a; padding: 12px; border-radius: 6px; border: 1px solid #334155; }
+  .stat .lbl { color: #64748b; font-size: 11px; text-transform: uppercase; }
+  .stat .val { color: #38bdf8; font-weight: 700; font-size: 18px; margin-top: 4px; }
+  .stat .val.onchain { color: #fbbf24; }
+  .stat .val.offchain { color: #34d399; }
+  #status-bar {
+    margin-top: 16px; padding: 10px 14px; background: #1e293b;
+    border-radius: 6px; font-size: 12px; color: #94a3b8;
+    display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px;
   }
-}
-
-// ============================================================
-// CANCELAR ORDEM (vendedor)
-// ============================================================
-async function cancelarOrdem(hash) {
-  const ordem = ordensMural[hash];
-  if (!ordem) { msgErro("Ordem não encontrada"); return; }
-  if (!signer) return;
-
-  if (ordem.criador.toLowerCase() !== endereco.toLowerCase()) {
-    msgErro("Só o criador pode cancelar");
-    return;
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+  .dot-on { background: #22c55e; box-shadow: 0 0 6px #22c55e; }
+  .dot-off { background: #ef4444; }
+  .mono { font-family: monospace; font-size: 11px; color: #34d399; }
+  .tag {
+    display: inline-block; font-size: 10px; padding: 2px 6px; border-radius: 3px;
+    font-weight: 700; letter-spacing: .3px; margin-right: 4px;
   }
-  if (!confirm("Cancelar esta ordem? A nonce será marcada como usada on-chain.")) return;
-
-  try {
-    msgAviso("Cancelando on-chain...");
-    const tx = await contrato.cancelarOrdemOffChain(ordem.nonce);
-    await tx.wait();
-    msgOk("Ordem cancelada on-chain.");
-    enviarWS({ tipo: "cancelar_ordem", hash });
-  } catch (e) {
-    if (e.code === 4001) { msgErro("Transação cancelada"); return; }
-    msgErro("Erro: " + (e.message || e));
+  .tag-oc { background: #064e3b; color: #34d399; }   /* off-chain */
+  .tag-on { background: #78350f; color: #fbbf24; }   /* on-chain  */
+  .tag-both { background: #1e3a8a; color: #93c5fd; } /* ambos     */
+  .tab-btn {
+    background: transparent; border: none; color: #64748b;
+    padding: 8px 12px; cursor: pointer; font-size: 13px;
+    border-bottom: 2px solid transparent; font-weight: 500;
   }
-}
+  .tab-btn.active { color: #38bdf8; border-bottom-color: #38bdf8; }
+  .tabs { display: flex; gap: 4px; margin-bottom: 16px; border-bottom: 1px solid #334155; }
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <h1>🌐 BRN <span>P2P</span> <small style="color:#64748b;font-size:12px;font-weight:400;">híbrido</small></h1>
+    <div style="display: flex; gap: 10px; align-items: center;">
+      <span id="endereco-carteira" class="badge" style="display:none;"></span>
+      <button id="btn-conectar" class="btn btn-primary">Conectar Carteira</button>
+    </div>
+  </header>
 
-// ============================================================
-// WEBSOCKET
-// ============================================================
-function enviarWS(payload) {
-  if (!ws || ws.readyState !== WebSocket.OPEN) {
-    msgErro("Sem conexão com o servidor. Tentando reconectar...");
-    conectarWS();
-    return;
-  }
-  ws.send(JSON.stringify(payload));
-}
+  <div id="mensagem"></div>
 
-function conectarWS() {
-  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
-
-  const proto = location.protocol === "https:" ? "wss:" : "ws:";
-  const url = `${proto}//${location.host}/ws`;
-
-  try { ws = new WebSocket(url); } catch (e) {
-    agendarReconexao(); return;
-  }
-
-  ws.onopen = () => {
-    $("ws-dot").className = "dot dot-on";
-    $("ws-status").textContent = "Conectado";
-    $("status-info").textContent = "Mural sincronizado";
-  };
-
-  ws.onclose = () => {
-    $("ws-dot").className = "dot dot-off";
-    $("ws-status").textContent = "Desconectado";
-    agendarReconexao();
-  };
-
-  ws.onerror = () => { try { ws.close(); } catch (_) {} };
-
-  ws.onmessage = (ev) => {
-    let msg;
-    try { msg = JSON.parse(ev.data); } catch { return; }
-
-    switch (msg.tipo) {
-      case "snapshot":
-        ordensMural = {};
-        (msg.ordens || []).forEach(o => { ordensMural[o.hash] = o; });
-        renderizarMural();
-        renderizarMinhas();
-        break;
-      case "nova_ordem":
-        ordensMural[msg.ordem.hash] = msg.ordem;
-        renderizarMural();
-        renderizarMinhas();
-        break;
-      case "ordem_cancelada":
-      case "ordem_executada":
-      case "ordem_expirada":
-        delete ordensMural[msg.hash];
-        renderizarMural();
-        renderizarMinhas();
-        break;
-      case "erro":
-        msgErro("Servidor: " + msg.msg);
-        break;
-      case "pong":
-        break;
-    }
-  };
-}
-
-function agendarReconexao() {
-  if (wsReconnectTimer) clearTimeout(wsReconnectTimer);
-  wsReconnectTimer = setTimeout(conectarWS, 3000);
-}
-
-// ============================================================
-// RENDERIZAÇÃO
-// ============================================================
-function renderizarMural() {
-  const tbody = $("lista-ordens");
-  const agora = Math.floor(Date.now() / 1000);
-  const lista = Object.values(ordensMural)
-    .filter(o => Number(o.expiracao) > agora)
-    .sort((a, b) => Number(b.cotacao) - Number(a.cotacao));
-
-  $("stat-total").textContent = lista.length;
-
-  if (lista.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="6" class="vazio">
-      Nenhuma ordem ativa. Seja o primeiro a criar! 🚀
-    </td></tr>`;
-    return;
-  }
-
-  tbody.innerHTML = lista.map(o => {
-    const usdcN = Number(o.valorUSDC) / 1e6;
-    const cotN = Number(o.cotacao) / 1e8;
-    const total = usdcN * cotN;
-    const seg = Number(o.expiracao) - agora;
-    const mm = String(Math.floor(seg / 60)).padStart(2, "0");
-    const ss = String(seg % 60).padStart(2, "0");
-    const souEu = endereco && o.criador.toLowerCase() === endereco.toLowerCase();
-    const acao = souEu
-      ? `<button class="btn btn-danger" onclick="cancelarOrdem('${o.hash}')">Cancelar</button>`
-      : `<button class="btn btn-success" onclick="executarOrdem('${o.hash}')">Comprar</button>`;
-
-    return `<tr>
-      <td>
-        <span class="mono">${shortAddr(o.criador)}</span>
-        ${souEu ? '<div style="font-size:10px;color:#38bdf8;margin-top:2px;">você</div>' : ""}
-      </td>
-      <td><strong>${usdcN.toFixed(2)}</strong></td>
-      <td>${cotN.toFixed(2)} BRL</td>
-      <td style="color:#38bdf8;">R$ ${total.toFixed(2)}</td>
-      <td style="color:#fbbf24;">${mm}:${ss}</td>
-      <td style="text-align:right;">${acao}</td>
-    </tr>`;
-  }).join("");
-}
-
-function renderizarMinhas() {
-  if (!endereco) {
-    $("minhas-lista").innerHTML = "Conecte a carteira para ver suas ordens.";
-    return;
-  }
-  const agora = Math.floor(Date.now() / 1000);
-  const minhas = Object.values(ordensMural)
-    .filter(o => o.criador.toLowerCase() === endereco.toLowerCase() && Number(o.expiracao) > agora);
-
-  if (minhas.length === 0) {
-    $("minhas-lista").innerHTML = "Você não tem ordens ativas.";
-    return;
-  }
-
-  $("minhas-lista").innerHTML = minhas.map(o => {
-    const usdcN = Number(o.valorUSDC) / 1e6;
-    const cotN = Number(o.cotacao) / 1e8;
-    const total = usdcN * cotN;
-    const seg = Number(o.expiracao) - agora;
-    const mm = String(Math.floor(seg / 60)).padStart(2, "0");
-    const ss = String(seg % 60).padStart(2, "0");
-    return `<div style="background:#0f172a;border:1px solid #334155;border-radius:6px;padding:12px;margin-bottom:8px;">
-      <div style="display:flex;justify-content:space-between;align-items:center;">
-        <div>
-          <div style="font-weight:600;">${usdcN.toFixed(2)} USDC @ ${cotN.toFixed(2)}</div>
-          <div style="font-size:11px;color:#94a3b8;">R$ ${total.toFixed(2)} • expira em ${mm}:${ss}</div>
+  <div class="grid">
+    <div>
+      <div class="card">
+        <div class="tabs">
+          <button class="tab-btn active" data-tab="criar">➕ Criar</button>
+          <button class="tab-btn" data-tab="minhas">📌 Minhas</button>
         </div>
-        <button class="btn btn-danger" onclick="cancelarOrdem('${o.hash}')" style="padding:6px 10px;font-size:12px;">✕</button>
+
+        <div id="tab-criar">
+          <div class="field">
+            <label>Valor em USDC a vender</label>
+            <input id="venda-usdc" type="number" step="0.000001" min="0" placeholder="100.00">
+          </div>
+          <div class="field">
+            <label>Cotação (BRL por USDC)</label>
+            <input id="venda-cotacao" type="number" step="0.01" min="0" placeholder="5.25">
+          </div>
+          <div class="field">
+            <label>Expira em</label>
+            <select id="venda-expiracao">
+              <option value="15">15 minutos</option>
+              <option value="30" selected>30 minutos</option>
+              <option value="60">1 hora</option>
+              <option value="360">6 horas</option>
+              <option value="1440">24 horas</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Total estimado</label>
+            <div id="total-estimado" style="color:#38bdf8; font-weight:600; padding:8px 0;">— BRL</div>
+          </div>
+
+          <div class="checkbox" style="margin-bottom:14px;">
+            <input type="checkbox" id="ancorar-onchain">
+            <div>
+              <div class="label">⛓️ Ancorar on-chain</div>
+              <div class="desc">Custa gas (~$0.005 na Polygon). A ordem sobrevive a qualquer queda do servidor.</div>
+            </div>
+          </div>
+
+          <button id="btn-criar" class="btn btn-primary" style="width:100%;">Assinar & Publicar</button>
+          <div class="hint" style="margin-top:10px; font-size:11px; color:#64748b;">
+            Você assina off-chain (grátis). O comprador paga o gas quando executar.
+          </div>
+        </div>
+
+        <div id="tab-minhas" style="display:none;">
+          <div id="minhas-lista" class="vazio">Conecte a carteira para ver suas ordens.</div>
+        </div>
       </div>
-    </div>`;
-  }).join("");
-}
 
-// ============================================================
-// TOTAL ESTIMADO EM TEMPO REAL
-// ============================================================
-function atualizarTotal() {
-  const usdc = Number($("venda-usdc").value);
-  const cot = Number($("venda-cotacao").value);
-  if (usdc > 0 && cot > 0) {
-    $("total-estimado").textContent = "R$ " + (usdc * cot).toFixed(2);
-  } else {
-    $("total-estimado").textContent = "— BRL";
-  }
-}
+      <div class="stats">
+        <div class="stat">
+          <div class="lbl">Total mural</div>
+          <div class="val" id="stat-total">0</div>
+        </div>
+        <div class="stat">
+          <div class="lbl">Off-chain</div>
+          <div class="val offchain" id="stat-oc">0</div>
+        </div>
+        <div class="stat">
+          <div class="lbl">On-chain</div>
+          <div class="val onchain" id="stat-on">0</div>
+        </div>
+      </div>
 
-// ============================================================
-// EVENTOS
-// ============================================================
-document.addEventListener("DOMContentLoaded", () => {
-  $("btn-conectar").addEventListener("click", conectar);
-  $("btn-criar").addEventListener("click", criarOrdem);
-  $("venda-usdc").addEventListener("input", atualizarTotal);
-  $("venda-cotacao").addEventListener("input", atualizarTotal);
+      <div class="card" style="margin-top:16px;">
+        <h2>💰 Saldo</h2>
+        <div id="saldo-usdc" style="font-size:20px;color:#38bdf8;font-weight:600;">— USDC</div>
+        <div id="saldo-matic" style="font-size:13px;color:#94a3b8;margin-top:6px;">— MATIC</div>
+      </div>
+    </div>
 
-  document.querySelectorAll(".tab-btn").forEach(btn => {
-    btn.addEventListener("click", () => {
-      document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
-      btn.classList.add("active");
-      const tab = btn.dataset.tab;
-      $("tab-criar").style.display = tab === "criar" ? "block" : "none";
-      $("tab-minhas").style.display = tab === "minhas" ? "block" : "none";
-      if (tab === "minhas") renderizarMinhas();
-    });
-  });
+    <div class="card">
+      <h2>📋 Mural Híbrido — Ordens Ativas</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Origem</th>
+            <th>Vendedor</th>
+            <th>USDC</th>
+            <th>Cotação</th>
+            <th>Total BRL</th>
+            <th>Expira</th>
+            <th style="text-align:right;">Ação</th>
+          </tr>
+        </thead>
+        <tbody id="lista-ordens">
+          <tr><td colspan="7" class="vazio">Conectando ao mural...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
 
-  init();
-});
+  <div id="status-bar">
+    <span><span id="ws-dot" class="dot dot-off"></span><span id="ws-status">Desconectado</span></span>
+    <span id="status-info">Aguardando...</span>
+  </div>
+</div>
 
-// Expor funções usadas em onclick
-window.executarOrdem = executarOrdem;
-window.cancelarOrdem = cancelarOrdem;
+<script src="https://cdn.ethers.io/lib/ethers-5.7.2.umd.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
